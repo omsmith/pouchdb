@@ -9,9 +9,37 @@ author: Nolan Lawson
 
 With the release of PouchDB 2.2.0, we're happy to introduce a feature that's been cooking on the slow simmer for some time: secondary indexes, a.k.a. persistent map/reduce.
 
-This is a powerful new tool for developers, since it allows you to index anything in your JSON documents &ndash; not just the doc IDs. Your data is sortable and searchable in ways that just weren't feasible before, thanks to a new cross-platform indexing engine we've built to work with every supported backend - IndexedDB, WebSQL, and LevelDB (and soon: LocalStorage!).
+This is a powerful new tool for developers, since it allows you to index anything in your JSON documents &ndash; not just the doc IDs. Starting in 2.2.0, your data is sortable and searchable in ways that just weren't feasible before, thanks to a new cross-platform indexing engine we've built to work with every supported backend - IndexedDB, WebSQL, and LevelDB (and soon: LocalStorage!).
 
-And did I mention?  It's fast.  Our [performance tests](https://gist.github.com/nolanlawson/11100235) show that the new persistent map/reduce API could give you orders of magnitude improvements over the old on-the-fly `query()` API.  In a database containing 1,000 documents, it's anywhere between 20 and 100 times faster.
+And did I mention?  It's fast.  Our [performance tests](https://gist.github.com/nolanlawson/11100235) show that the new persistent map/reduce API could give you orders of magnitude improvements over the old on-the-fly `query()` method.  We tested a database containing 1,000 documents, and PouchDB 2.2.0 was between 20 and 100 times faster than PouchDB 2.1.2.
+
+The old way you might query:
+
+```js
+var pouch = new PouchDB('mydb');
+
+// query in-memory (slow)
+pouch.query(function (doc) {
+  emit(doc.name);
+});
+```
+
+The new way you should query:
+
+```js
+var pouch = new PouchDB('mydb');
+
+// create a view (i.e. an index)
+pouch.putView('my_index', function (doc) {
+  emit(doc.name);
+}).catch(function (err) {
+  // view already exists, ignore
+}).then(function () {
+  // query the index (much faster)
+  pouch.query('my_index');
+})
+
+```
 
 
 Ew, you put map/reduce in my JavaScript?
@@ -21,13 +49,17 @@ First, let's define what map/reduce is, so you can understand why you might want
 
 #### Indexes in SQL databases
 
-Here's a quick refresher on how indexes work.  In classic relational databases like MySQL and PostgreSQL, you can typically query whatever field you want:
+Here's a quick refresher on how indexes work.  In classic relational databases like MySQL and PostgreSQL, you can query whatever field you want:
 
-    SELECT * FROM pokemon WHERE name = 'Pikachu';
+```sql
+SELECT * FROM pokemon WHERE name = 'Pikachu';
+```
     
 But if you don't want your performance to be terrible, you first add an index:
 
-    ALTER TABLE pokemon ADD INDEX myIndex ON (name);
+```sql
+ALTER TABLE pokemon ADD INDEX myIndex ON (name);
+```
     
 The job of the index is to ensure the the field is stored in a B-tree within the database, so your queries run in _O(log(n))_ time instead of _O(n)_ time.
 
@@ -35,7 +67,7 @@ The job of the index is to ensure the the field is stored in a B-tree within the
 
 All of the above is also true in document stores like CouchDB and MongoDB, but conceptually it's a little different. By default, documents are assumed to be schemaless blobs with one primary key (called `_id` in both Mongo and Couch), and any other keys need to be specified separately.  The concepts are largely the same; it's mostly just the vocabulary that's different.
  
-In CouchDB, queries are called _map/reduce functions_.  This is because, as in many NoSQL databases, CouchDB is designed to scale well across multiple nodes, and to perform efficient query operations in parallel.  Basically, the idea is that you divide your index into a _map_ function and a _reduce_ function, each of which may be executed in parallel in a multi-node cluster.
+In CouchDB, queries are called _map/reduce functions_.  This is because, like most NoSQL databases, CouchDB is designed to scale well across multiple nodes, and to perform efficient query operations in parallel. Basically, the idea is that you divide your query into a _map_ function and a _reduce_ function, each of which may be executed in parallel in a multi-node cluster.
 
 #### Map functions
 
@@ -47,7 +79,7 @@ function (doc) {
 }
 ```  
 
-This is functionally equivalent to the SQL index given above.  What it basically says is: "for a given document, emit its name as a key."
+This is functionally equivalent to the SQL index given above.  What it essentially says is: "for each document in the database, emit its name as a key."
 
 And since it's just JavaScript, you're allowed to get as fancy as you want here:
 
@@ -63,191 +95,100 @@ function (doc) {
 }
 ```
 
-#### Reduce functions
-
-As for _reduce_ functions, there are basically a few handy built-ins that do aggregate operations (e.g. `'_sum'` and `'_count'`), and you can typically steer clear of writing your own. But if you're adventurous, you can check out the [CouchDB documentation](http://couchdb.readthedocs.org/en/latest/couchapp/views/intro.html) for details.
-
-What map/reduce is capable of
-------------
-
-To see how map/reduce performs in practice, let's walk through a simple example.  Say we have a database full of aging rock stars, which looks like this:
+Then you can query it:
 
 ```js
-[{
-      "_id"  : "bowie",
-      "name" : "David Bowie",
-      "age"  : 67
-    }, {
-      "_id"  : "dylan",
-      "name" : "Bob Dylan",
-            "age"  : 72
-    }, {
-      "_id"  : "younger_dylan",
-      "name" : "Jakob Dylan",
-            "age"  : 44
-    }, {
-      "_id"  : "hank_the_third",
-      "name" : "Hank Williams",
-            "age"  : 41
-    }, {
-      "_id"  : "hank",
-      "name" : "Hank Williams",
-            "age"  : 91
-    }]
-```
+// find docs with name === 'Pika pi!'
+pouch.query('my_index', {key: 'Pika pi!', include_docs: true});
 
-If you call `db.allDocs()`, you'll just get every document sorted by its `_id`:
-
-```js
-    {
-      "id": "bowie",
-      "key": "bowie",
-      "value": {
-        "rev": "1-e018c5bbceba92e52bf4e46b503828f5"
-      }
-    }, {
-      "id": "dylan",
-      "key": "dylan",
-      "value": {
-        "rev": "1-1ce006d980cc690d89787bbf2241dc01"
-      }
-    }, {
-      "id": "hank",
-      "key": "hank",
-      "value": {
-        "rev": "1-38801b1e21b177f5479625a6a3899659"
-      }
-    }, {
-      "id": "hank_the_third",
-      "key": "hank_the_third",
-      "value": {
-        "rev": "1-cfda51b9e3966d9c36d2c8fcc99cae3b"
-      }
-    }, {
-      "id": "younger_dylan",
-      "key": "younger_dylan",
-      "value": {
-        "rev": "1-d884b08a9b759274bf49c7d994ca8542"
-      }
-    }
+// find the first 5 docs whose name starts with 'P'
+pouch.query('my_index', {startkey: 'P', limit: 5, include_docs: true});
 ```
 
 {% include alert_start.html variant="info"%}
 
-If you don't specify a doc's <code>_id</code>, it will be auto-generated, e.g. <code>'36483B8A-DF4A-4AEB-B946-096BA0FA8813'</code>.
+The pagination options for <code>query()</code> &ndash; i.e., <code>startkey</code>/<code>endkey</code>/<code>key</code>/<code>keys</code>/<code>skip</code>/<code>limit</code>/<code>descending</code> &ndash; are exactly the same as with <code>allDocs()</code>. For a beginner's guide to pagination, read <a href='http://pouchdb.com/2014/04/14/pagination-strategies-with-pouchdb.html'>Pagination strategies with PouchDB</a>.
 
 {% include alert_end.html %}
 
-However, with the `query()` API, you can sort these rockers (somewhat unflatteringly) by their age:
+#### Reduce functions
 
-```js
-function (rocker) {
-  emit(rocker.age);
-}
-
-```
-
-This returns:
-
-```js
-[ { id: 'hank_the_third', key: 41, value: null },
-     { id: 'younger_dylan', key: 44, value: null },
-     { id: 'bowie', key: 67, value: null },
-     { id: 'dylan', key: 72, value: null },
-     { id: 'hank', key: 91, value: null } ] 
-```
-
-Or by their last name:
-
-```js
-function (rocker) {
-  emit(rocker.name.split(' ')[1]);
-}
-
-```
-
-This returns:
-
-```js
-   [ { id: 'bowie', key: 'Bowie', value: null },
-     { id: 'dylan', key: 'Dylan', value: null },
-     { id: 'younger_dylan', key: 'Dylan', value: null },
-     { id: 'hank', key: 'Williams', value: null },
-     { id: 'hank_the_third', key: 'Williams', value: null } ] }
-```
-
-A `reduce` function runs aggregate operations against whatever's emitted in the `map` function.  So for instance, we can also use that to count up the number of rockers by first name:
-
-```js
-{
-  map: function (rocker) {
-    emit(rocker.name.split(' ')[0]);
-  },
-  reduce: '_count'
-}
-```
-
-This returns:
-
-```js
-{ rows: 
-   [ { key: 'Bob', value: 1 },
-     { key: 'David', value: 1 },
-     { key: 'Hank', value: 2 },
-     { key: 'Jakob', value: 1 } ] }
-```
-
-There are also custom reduce functions, complex keys, `group_level`, closures, and other neat tricks that are beyond the scope of this article, so check out [the PouchDB documentation](http://pouchdb.com/api.html#query_database) for details.
-
-#### Paginating views
-
-Just like `allDocs()`, you can paginate over your saved views. **TODO write more stuff here.**
-
+As for _reduce_ functions, there are a few handy built-ins that do aggregate operations (e.g. `'_sum'` and `'_count'`), and you should typically steer clear of trying to write your own. But if you're adventurous, you should check out the [CouchDB documentation](http://couchdb.readthedocs.org/en/latest/couchapp/views/intro.html) or the [the PouchDB documentation](http://pouchdb.com/api.html#query_database) for details.
 
 Map/reduce, reuse, recycle
 ----------
 
-PouchDB actually already had map/reduce since way before version 2.2.0, and all the code above would have worked. It would have had a big flaw, though: before 2.2.0, all queries were performed in-memory, reading every document the entire database just to perform a single operation.
+PouchDB has actually had map/reduce queries since way before version 2.2.0, via the `query()` API. It had a big flaw, though: all queries were performed in-memory, reading every document the entire database just to perform a single operation.
 
-This is fine for small data sets, but it could be murder for large databases. On mobile devices especially, memory is a precious commodity, so you want to be as frugal as possible with the resources given to you by the OS.
+This is fine when your data set is small, but it could be murder on large databasess. On mobile devices especially, memory is a precious commodity, so you want to be as frugal as possible with the resources given to you by the OS.
 
-The new persistent `query()` method is much more memory-efficient, and it won't read in the entire database unless you tell it to.  (Read up on pagination with `startkey` and `skip` to understand how to avoid this.)  It has two modes:
+The new persistent `query()` method is much more memory-efficient, and it won't read in the entire database unless you tell it to.  It has two modes:
 
-* Temporary views
-* Persistent views (new)
+* Temporary views (like the old system)
+* Persistent views (new system)
 
 Both of these concepts exist in CouchDB, and they're faithfully emulated in PouchDB.
 
 #### A room with a view
 
-First off, some vocabulary: CouchDB technically calls indexes _views_, and these views are stored in a special document called a _design document_. Basically, a design document describes a view, and a view describes a map/reduce query, which tells the database that you plan to use that query later, so it better start indexing it now. In other words, creating a view is the same as saying `CREATE INDEX` in a relational database.
+First off, some vocabulary: CouchDB calls indexes _views_, and these views are stored in a special document called a _design document_. Basically, a design document describes a view, and a view describes a map/reduce query, which tells the database that you plan to use that query later, so it better start indexing it now. In other words, creating a view is the same as saying `CREATE INDEX` in a SQL database.
 
-**Temporary views** are just that &ndash; temporary. They create a view, write an index to the database, query the view, and then poof, they're deleted.  That's why in older version of PouchDB, we could get away by doing it all in-memory.
+**Temporary views** are just that &ndash; temporary. They create a view, write it to disk, query it, and then poof, it's deleted.  That's why, in older version of PouchDB, we could get away with doing it all in-memory.
 
-Crucially, though, temporary views have to do a full table scan every time you execute them (along with all the reading and writing to disk that that entails), just to throw it away at the end.  That may be fine for quick testing during development, but in production it can be a big drag on performance.
+Crucially, though, temporary views have to do a full table scan every time you execute them, along with all the reading and writing to disk that that entails, only to throw it away at the end.  That may be fine for quick testing during development, but in production it can be a big drag on performance.
 
-**Persistent views**, however, are a much better solution if you want your queries to be fast.  Persistent views require you to first save a design document containing your view, so that the emitted fields are already indexed by the time you need to look them up.  Subsequent lookups don't need to do any additional writes on the database, unless documents have been added or modified, in which case only the diff needs to be applied.
+**Persistent views**, however, are a much better solution if you want your queries to be fast.  Persistent views require you to first save a design document containing your view, so that the emitted fields are already indexed by the time you need to look them up.  Subsequent lookups don't need to do any additional writes on the database, unless documents have been added or modified, in which case only the updated documents need to be processed.
 
-{% include alert_start.html variant="warning"%}
+#### Writing your first view
 
-Technically, the view will not be built up on disk until after the first time you <code>query()</code> it.  A good pattern is to always call <code>query({stale: 'update after'})</code> after creating a view, to ensure that it starts building in the background.
+A design document with a view looks just like a regular document.  The simplest one might look like this:
+
+```js
+{
+  _id: '_design/my_index',
+  views: {
+    'my_index': {
+      map: function(doc) {
+        emit(doc.name);
+      }.toString()
+    }
+  }
+}
+```
+
+Normally you would `put()` this document, and then it would be available for querying using the name `my_index`.
+
+In PouchDB 2.2.0, though, we tried to make view creation easy by taking away the boilerplate.  Instead of explicitly creating a design document like the above, you can just write:
+
+```js
+pouch.putView('my_index', function (doc) {
+  emit(doc.name);
+});
+```
+
+And it will automatically create the above design document and put it in your database (unless there's a conflict, i.e. it already exists).
+
+{% include alert_start.html variant="info"%}
+
+<strong>Why design docs?</strong> Design docs are synced, stored, updated, and deleted exactly like normal documents.  They also show up in <code>allDocs()</code> queries, but you can filter them out by using <code>{startkey: 'design0'}</code>.  A design doc can contain multiple views, but there's really no advantage to this, and it can even be a performance issue in CouchDB. So by default, PouchDB only creates one view per design doc, and we use the same name for both.
 
 {% include alert_end.html %}
 
 #### Tips for writing views
 
-It's helpful to remember that, whatever you write for your map function, it will have to be executed for each document in your database.  Thus you want to minimize the number of times you create an index.
+It's helpful to remember that map functions will have to be executed for each document in your database.  Thus you want to minimize the number of times you create the view, and try to move as much logic as possible into your `query()` params instead.
 
-For example, here's a pattern I've seen in a lot of PouchDB code, which you should avoid from now on:
+For example, here's an anti-pattern I've occasionally seen, which you should avoid:
 
 ```js
+// Anti-pattern - do not use!
 function myMapFunction(doc) {
   if (doc.name === 'foobar') {
     emit(doc.name);
   }
 }
-db.query(myMapFunction).then(function (res) {
-  console.log(res.rows); // prints the "foobar" doc
+pouch.query(myMapFunction).then(function (result) {
+  /* got the 'foobar' doc */
 });
 ```
 
@@ -257,22 +198,29 @@ A better pattern is this:
 function myMapFunction(doc) {
   emit(doc.name);
 }
-// save the view...
-db.query('my_view', {key: 'foobar'}).then(function (res) {
-  console.log(res.rows); // prints the "foobar" doc
+pouch.putView('my_view', myMapFunction).catch(function (err) {
+ /* 'my_view' already exists, ignore */
+}).then(function () {
+  pouch.query('my_view', {key: 'foobar'}).then(function (result) {
+    /* got the 'foobar' doc */
+  });
 });
 ```
 
-Both of these examples will do the same thing (find all docs with the name `'foobar'`) but the second one will only need to build the index once. Plus, from then on you can query for `'foobar'`, or `'foobaz'`, or whatever you want, by using the `key` option.
+Both of these examples will do the same thing, but the second one will only need to build the index once. Plus, from now on, you can query for `'foobar'` or `'foobaz'` or whatever you want, by using the `key` option.
 
-So don't forget: the same pagination options that work for `allDocs()` also work for `query()`!
+{% include alert_start.html variant="warning"%}
+
+<strong>Performance tip</strong>: Technically, the view will not be built up on disk until the first time you <code>query()</code> it.  So a good trick is to always call <code>query({stale: 'update after'})</code> after creating a view, to ensure that it starts building in the background.  You can also use <code>{stale: 'ok'}</code> to avoid waiting for the most up-to-date results. In the future, we may add a way for views to auto-update in the background.
+
+{% include alert_end.html %}
 
 For those who get nostalgic
 ----
 
 Of course, some of our loyal Pouchinistas may have been perfectly satisfied with the old way of doing things. The fact that the `query()` function read the entire database into memory might actually have served them just fine, thank you.
 
-To be sure, there are some legitimate use cases for this. If you don't store a lot of data, or if all your users are on desktop computers, or if you require closures (not supported by persistent views), then doing map/reduce in memory may have been fine for you. In fact, an upgrade to 2.2.0 might actually make your app perform more _slowly_, because now it has to read and write to disk.
+To be sure, there are some legitimate use cases for this. If you don't store a lot of data, or if all your users are on desktop computers, or if you require closures (not supported by persistent views), then doing map/reduce in memory may have been fine for you. In fact, an upgrade to 2.2.0 might actually make your app perform _more slowly_, because now it has to read and write to disk.
 
 Luckily we have a great solution for you: instead of using the `query()` API, you can use the much more straightforward `allDocs()` API.  This will read all documents into memory, just like before, but best of all, you can apply whatever functions you want to the data, without having to bother with learning a new API or even what the heck "map/reduce" is.
 
@@ -327,36 +275,43 @@ Want to find all albums by David Bowie?  Wham bam, thank you ma'am: `allDocs({st
 
 In this example, you're getting all those "indexes" for free, each time a document is added to the database.  It doesn't take up any additional space on disk compared to UUIDs, and you neither have to wait for a view to get built up, nor do you have to understand the map/reduce API at all.
 
-Of course, this system starts to get shaky when you need to search by a variety of criteria: e.g. albums sortedy by year, artists sorted by age, etc. But for a lot of simple apps, you should be able to get by without using the `query()` API at all.
+Of course, this system starts to get shaky when you need to search by a variety of criteria: e.g. albums sortedy by year, artists sorted by age, etc. And you can only sort strings &ndash; not numbers, booleans, arrays, or arbitrary JSON objects.  But for a lot of simple apps, you should be able to get by without using the `query()` API at all.
 
 {% include alert_start.html variant="info"%}
 
-<strong>Performance tip</strong>: if you're just using the randomly-generated doc `_id`s, then you're not only missing out on an opportunity to get a free index &ndash; you're also incurring the overhead of a building an index you're never going to use!
+<strong>Performance tip</strong>: if you're just using the randomly-generated doc <code>_id</code>s, then you're not only missing out on an opportunity to get a free index; you're also incurring the overhead of building an index you're never going to use!
 
 {% include alert_end.html %}
 
 
-For the nerds: implementation details
+For the database geeks: implementation details
 -------
 
-If you want to know how map/reduce works in PouchDB, it's actually exceedingly easy: just open up your dev console, and see where we've created a bonus database to store the index.
+If you want to know how map/reduce works in PouchDB, it's actually exceedingly easy: just open up your developer tools, head over to "Databases," and see where we've created a bonus database to store the index.
 
-One of the neat things about how we implemented map/reduce is that we actually did it entirely with PouchDB itself.  Yes folks, that's right: your map/reduce view is just a regular old PouchDB database, and map/reduce itself is just a plugin with no special privileges, creating databases in exactly the same way a regular user would.  The map/reduce code is exactly the same for all three backends: LevelDB, IndexedDB, and WebSQL.
+One of the neat things about how we implemented map/reduce is that we managed to do it entirely with PouchDB itself.  Yes folks, that's right: your map/reduce view is just a regular old PouchDB database, and map/reduce is just a plugin with no special privileges, creating databases in exactly the same way a regular user would.  Since the implementation sits on top of the PouchDB API, it's exactly the same for all three backends: LevelDB, IndexedDB, and WebSQL.
 
-And just to be clear: it's not like we set out to make PouchDB some kind of map/reduce engine.  In fact, as we were debating how to implement this feature, we originally ran with the assumption that we'd need to build additional functionality on top of PouchDB, and it was only after a few months of work that we realized the whole thing could be done in PouchDB proper.  In the end, the only additional functionality that had to be added was a hook to tell PouchDB to destroy the map/reduce database when its parent database was destroyed.  That's it.
+How did we pull off this trick?  To be clear: it's not like we set out to make PouchDB some kind of map/reduce engine.  In fact, as we were debating how to implement this feature, we originally ran on the assumption that we'd need to build additional functionality on top of PouchDB. It was only after a few months of discussions and experiments that we realized the whole thing could be done in PouchDB proper.
 
-This fact also has a nice parallel in CouchDB: it turns out that they, too, reused most of the core view code itself to implement the database.  As they say in the docs, `_all_Docs` is just a special kind of view.
+In the end, the only additional functionality we had to add to the main PouchDB codebase was a hook to tell PouchDB to destroy the map/reduce database when its parent database was destroyed.  That's it.
 
-As for the index itself, what it basically boils down to is clever serialization of arbitrary JSON values into CouchDB-style collation ordering (e.g. booleans before ints, ints before strings, strings before arrays, arrays before objects, and so on recursively).
+This fact also has a nice parallel in CouchDB: it turns out that they, too, reused the core `_view` code in order to write `_all_docs`.  In CouchDB, `_all_Docs` is just a special kind of `_view`, whereas in PouchDB, we built map/reduce views on top of `allDocs()`.  We did it backwards, but in spirit the idea was the same.
+
+As for the index itself, what it basically boils down to is clever serialization of arbitrary JSON values into [CouchDB collation ordering](http://couchdb.readthedocs.org/en/latest/couchapp/views/collation.html) &ndash; i.e. null before booleans, booleans before numbers, numbers before strings, strings before arrays, arrays before objects, and so on recursively.  Every JSON object maps to an indexable string that guarantees the same ordering in every database backend, and we only deviate from CouchDB by using ASCII string ordering instead of ICU ordering (since that's what our backends use).
 
 Then, we take this value and concatenate it with whatever else needs to be indexed (usually just the doc `_id`), meaning the entire lookup key is a single string.  We decided on this implementation because:
 
 1. LevelDB does not support complex indexes.
-2. IndexedDB does support complex indexes, but not in IE.
+2. IndexedDB _does_ support complex indexes, but not in IE.
 3. WebSQL supports multi-field indexes, but it's also a dead spec, so we're not going to prioritize it above the others.
 
-Since we're storing many types of documents in a single database that must be synced with one another, and since by design CouchDB/PouchDB do not have multi-document transaction semantics, we implemented a task queue on top of the database to serialize writes.  Interestingly, this is the same approach Google took when they implemented IndexedDB on top of LevelDB, and it's similar to what we're currently doing for our own LevelDB adapter (although since we don't need full transactions, we avoid a full task queue for most operations, and just use optimistic locks instead).
+The next part of the design was to divide the data we needed to store into two kinds of documents: 1) emitted key/values with doc IDs, which are used for querying and pagination, and 2) mappings from doc IDs to those key/values, so that we can delete or update them when their parent documents are deleted or updated). Since, by design, PouchDB databases do not have multi-document transaction semantics, we implemented a task queue on top of the database to serialize writes.
 
-Aside from that, the only other neat trick is a liberal use of `_local` documents, which are a special class of documents that aren't counted in the `total_rows` count, don't show up in `allDocs`, but may be accessed using the normal `put()` and `get()` methods.  This is all it takes to fully reimplement CouchDB map/reduce in a tiny JavaScript database!
+Aside from that, the only other neat trick was a liberal use of `_local` documents, which are a special class of documents that aren't counted in the `total_rows` count, don't show up in `allDocs`, but may be accessed using the normal `put()` and `get()` methods.  This is all it takes to fully reimplement CouchDB map/reduce in a tiny JavaScript database!
 
-Anyone interested in more implementation details can read the months-long discussions in mapreduce/12, 1549, and 1658.  The code itself is also pretty succinct.
+Anyone interested in more implementation details can read the months-long discussions in [mapreduce/12][mapreduce-12], [1549][], and [1658][].  [The map/reduce code][mapreduce] itself is also pretty succinct.
+
+[mapreduce]: https://github.com/pouchdb/mapreduce
+[mapreduce-12]: https://github.com/pouchdb/mapreduce/issues/12
+[1549]: https://github.com/pouchdb/pouchdb/issues/1549
+[1658]: https://github.com/pouchdb/pouchdb/issues/1658
